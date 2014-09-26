@@ -222,20 +222,6 @@ module ActiveRecord
       find_by(attributes) || new(attributes, &block)
     end
 
-    # Runs EXPLAIN on the query or queries triggered by this relation and
-    # returns the result as a string. The string is formatted imitating the
-    # ones printed by the database shell.
-    #
-    # Note that this method actually runs the queries, since the results of some
-    # are needed by the next ones when eager loading is going on.
-    #
-    # Please see further details in the
-    # {Active Record Query Interface guide}[http://guides.rubyonrails.org/active_record_querying.html#running-explain].
-    def explain(*args)
-      #TODO: Fix for binds.
-      exec_explain(collecting_queries_for_explain { exec_queries }, *args)
-    end
-
     # Converts relation objects to Array.
     def to_a
       load
