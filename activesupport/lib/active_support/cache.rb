@@ -8,6 +8,9 @@ require "active_support/core_ext/numeric/time"
 require "active_support/core_ext/object/to_param"
 require "active_support/core_ext/string/inflections"
 
+require "active_support/cache/serial_compressor"
+require "active_support/cache/streaming_compressor"
+
 module ActiveSupport
   # See ActiveSupport::Cache::Store for documentation.
   module Cache
@@ -16,8 +19,6 @@ module ActiveSupport
     autoload :MemCacheStore,    "active_support/cache/mem_cache_store"
     autoload :NullStore,        "active_support/cache/null_store"
     autoload :RedisCacheStore,  "active_support/cache/redis_cache_store"
-
-    autoload :StreamingCompressor, "active_support/cache/streaming_compressor"
 
     # These options mean something to all cache implementations. Individual cache
     # implementations may support additional options.
@@ -89,11 +90,20 @@ module ActiveSupport
         expanded_cache_key
       end
 
-      # Object with `.dump` and `.load` methods to compress cached values.
-      attr_writer :compressor
+      COMPRESSORS = {
+        serial: SerialCompressor,
+        streaming: StreamingCompressor,
+      }
 
-      def compressor
-        @compressor ||= StreamingCompressor
+      # Object with `.dump` and `.load` methods to compress cached values.
+      attr_accessor :default_compressor
+
+      def fetch_compressor(name)
+        case name
+        when true then default_compressor
+        when Class then name
+        else COMPRESSORS.fetch(name)
+        end
       end
 
       private
@@ -119,6 +129,8 @@ module ActiveSupport
           ActiveSupport::Cache.const_get(store.to_s.camelize)
         end
     end
+
+    self.default_compressor = SerialCompressor
 
     # An abstract cache store class. There are multiple cache store
     # implementations, each having its own additional features. See the classes
@@ -372,7 +384,7 @@ module ActiveSupport
               nil
             else
               payload[:hit] = true if payload
-              entry.value
+              get_entry_value(entry, options)
             end
           else
             payload[:hit] = false if payload
@@ -580,7 +592,7 @@ module ActiveSupport
               elsif entry.mismatched?(version)
                 # Skip mismatched versions
               else
-                results[name] = entry.value
+                results[name] = get_entry_value(entry, options)
               end
             end
           end
@@ -702,8 +714,9 @@ module ActiveSupport
         end
 
         def get_entry_value(entry, name, options)
-          instrument(:fetch_hit, name, options) {}
-          entry.value
+          instrument(:fetch_hit, name, options) do
+            entry.value(options)
+          end
         end
 
         def save_block_result_to_cache(name, options)
@@ -736,11 +749,11 @@ module ActiveSupport
         @created_at = Time.now.to_f
         @expires_in = expires_in && expires_in.to_f
 
-        compress!(compress_threshold) if compress
+        compress!(compress, compress_threshold) if compress
       end
 
-      def value
-        compressed? ? uncompress(@value) : @value
+      def value(compress: true, **)
+        compressed? ? uncompress(compressor, @value) : @value
       end
 
       def mismatched?(version)
@@ -791,12 +804,13 @@ module ActiveSupport
       end
 
       private
-        def compress!(compress_threshold)
+        def compress!(compressor, threshold)
           case @value
           when nil, true, false, Numeric
             # don't compress
           else
-            compressed_value = Cache.compressor.dump(@value, compress_threshold: compress_threshold)
+            compressor = Cache.fetch_compressor(compressor)
+            compressed_value = compressor.dump(@value, compress_threshold: threshold)
             if compressed_value
               @value = compressed_value
               @compressed = true
@@ -808,8 +822,8 @@ module ActiveSupport
           defined?(@compressed)
         end
 
-        def uncompress(value)
-          Cache.compressor.load(value)
+        def uncompress(compressor, value)
+          Cache.fetch_compressor(compressor).load(value)
         end
     end
   end
